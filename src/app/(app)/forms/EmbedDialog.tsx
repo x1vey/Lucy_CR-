@@ -40,11 +40,20 @@ export default function EmbedDialog({
   const ingestUrl = `${appUrl}/api/ingest/${form.token}`;
 
   const iframeSnippet = `<iframe
+  id="lucy-iframe-${form.slug}"
   src="${formUrl}"
   title="${form.name}"
   style="width:100%;max-width:480px;height:640px;border:0;"
   loading="lazy"
-></iframe>`;
+></iframe>
+<script>
+  (function() {
+    var iframe = document.getElementById("lucy-iframe-${form.slug}");
+    if (window.location.search) {
+      iframe.src = iframe.src + (iframe.src.indexOf('?') === -1 ? '?' : '&') + window.location.search.substring(1);
+    }
+  })();
+</script>`;
 
   const fieldKeys = form.fields.map((f) => f.key);
   const trackingSnippet = `<!-- Your own form markup. The input "name" attributes
