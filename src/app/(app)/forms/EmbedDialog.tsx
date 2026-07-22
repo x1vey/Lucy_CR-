@@ -65,6 +65,15 @@ ${form.fields
   document.getElementById("lucy-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(e.target).entries());
+    
+    // Capture UTM parameters from the URL
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, val] of params.entries()) {
+      if (key.startsWith("utm_")) {
+        data[key] = val;
+      }
+    }
+
     const res = await fetch("${ingestUrl}", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

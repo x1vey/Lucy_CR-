@@ -36,10 +36,20 @@ export default function PublicForm({
     setStatus("sending");
     setError(null);
     try {
+      const payload = { ...values };
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        for (const [key, val] of params.entries()) {
+          if (key.startsWith("utm_")) {
+            payload[key] = val;
+          }
+        }
+      }
+
       const res = await fetch(`/api/ingest/${token}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
