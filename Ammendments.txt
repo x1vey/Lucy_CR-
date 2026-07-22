@@ -1,0 +1,244 @@
+{
+  "role": "system",
+  "task": "Act as a principal software architect, PostgreSQL database expert, and CRM systems designer. Review my existing CRM database architecture and redesign only the database layer while preserving the existing application architecture.",
+  "context": {
+    "application": "Next.js CRM",
+    "tenant_model": "Single tenant (one business owner, not SaaS)",
+    "database": "PostgreSQL (Supabase)",
+    "goal": "Professional production-quality schema that prioritizes simplicity, maintainability, relational integrity, and query performance."
+  },
+  "constraints": {
+    "keep": [
+      "Repository Pattern",
+      "Server Actions",
+      "Soft Deletes (archived_at)",
+      "UUID primary keys",
+      "Snapshot fields on historical records",
+      "Automation definitions stored as JSON",
+      "Automation runtime stored in relational tables",
+      "PostgreSQL",
+      "Overall application architecture"
+    ],
+    "do_not": [
+      "Redesign the application architecture",
+      "Redesign the repository pattern",
+      "Rewrite the frontend",
+      "Rewrite the business logic",
+      "Optimize for the fewest number of tables"
+    ]
+  },
+  "requested_changes": [
+    {
+      "title": "Replace Event-Sourced Tags",
+      "description": "Replace the append-only tag activity model with a relational design.",
+      "tables": [
+        "tags",
+        "customer_tags",
+        "tag_history"
+      ],
+      "requirements": [
+        "Current tag membership should be directly queryable",
+        "History should be stored separately",
+        "Bulk assignment should remain possible",
+        "Use foreign keys",
+        "History must not be the source of truth"
+      ]
+    },
+    {
+      "title": "Separate Bookings",
+      "description": "Move bookings out of Product JSON.",
+      "tables": [
+        "products",
+        "calendars",
+        "bookings"
+      ],
+      "requirements": [
+        "Bookings must be relational",
+        "Conflict detection should be simple",
+        "Reporting should be efficient",
+        "Support future growth"
+      ]
+    },
+    {
+      "title": "Separate Integration Settings",
+      "description": "Remove integrations from the Product table.",
+      "tables": [
+        "integration_settings"
+      ],
+      "requirements": [
+        "Store Google settings",
+        "Store Stripe settings",
+        "Store LeadConnector settings",
+        "Support future integrations"
+      ]
+    },
+    {
+      "title": "Reduce JSON Usage",
+      "description": "Only use JSON where it represents configuration.",
+      "keep_json_for": [
+        "Automation definitions",
+        "Form schemas",
+        "Custom fields",
+        "UI configuration"
+      ],
+      "avoid_json_for": [
+        "Bookings",
+        "Purchases",
+        "Relationships",
+        "Transactional records"
+      ]
+    },
+    {
+      "title": "Improve Customers",
+      "fields": [
+        "phone",
+        "company",
+        "status",
+        "owner",
+        "lead_source",
+        "created_by",
+        "last_contacted_at",
+        "hidden",
+        "archived_at"
+      ],
+      "instruction": "Recommend any additional CRM fields commonly used."
+    },
+    {
+      "title": "Notes",
+      "table": "notes",
+      "fields": [
+        "id",
+        "customer_id",
+        "body",
+        "created_by",
+        "created_at",
+        "archived_at"
+      ]
+    },
+    {
+      "title": "Activities Timeline",
+      "table": "activities",
+      "fields": [
+        "id",
+        "customer_id",
+        "type",
+        "payload",
+        "created_by",
+        "created_at"
+      ],
+      "examples": [
+        "Email Sent",
+        "Email Opened",
+        "Purchase",
+        "Booking",
+        "Form Submitted",
+        "Tag Added",
+        "Tag Removed",
+        "Manual Note",
+        "Imported Contact",
+        "Pipeline Stage Changed"
+      ]
+    },
+    {
+      "title": "Purchases",
+      "instruction": "Keep snapshot fields such as customer_name and product_name."
+    },
+    {
+      "title": "Duplicate Contacts",
+      "fields": [
+        "merged_into",
+        "duplicate_of"
+      ]
+    },
+    {
+      "title": "Email History",
+      "table": "emails",
+      "fields": [
+        "customer_id",
+        "provider_id",
+        "subject",
+        "body",
+        "status",
+        "opened_at",
+        "clicked_at",
+        "sent_at"
+      ]
+    },
+    {
+      "title": "Deals / Pipeline",
+      "table": "deals",
+      "fields": [
+        "customer_id",
+        "stage",
+        "value",
+        "probability",
+        "expected_close_date",
+        "owner",
+        "status"
+      ]
+    },
+    {
+      "title": "Forms",
+      "instruction": "Keep form definitions as JSON unless normalization provides significant benefits. Explain the reasoning."
+    },
+    {
+      "title": "Automations",
+      "instruction": "Keep automation definitions as JSON and runtime state as relational tables unless there is a compelling reason not to."
+    },
+    {
+      "title": "Indexes",
+      "instruction": "Recommend indexes for all important lookup paths including email, phone, company, bookings, purchases, deals, and customer search."
+    },
+    {
+      "title": "Audit Logs",
+      "instruction": "Separate System Audit Logs from Customer Activities."
+    },
+    {
+      "title": "Attachments",
+      "table": "attachments",
+      "fields": [
+        "id",
+        "customer_id",
+        "filename",
+        "mime_type",
+        "size",
+        "url",
+        "uploaded_at"
+      ]
+    },
+    {
+      "title": "UTM Tracking",
+      "fields": [
+        "first_touch",
+        "latest_touch"
+      ]
+    }
+  ],
+  "deliverables": [
+    "Complete ER diagram",
+    "Complete table list",
+    "Every table with every column",
+    "Data types",
+    "Nullable/default values",
+    "Foreign keys",
+    "Indexes",
+    "Constraints",
+    "Unique keys",
+    "Check constraints",
+    "Cascade rules",
+    "Database philosophy",
+    "Migration strategy",
+    "Scalability review",
+    "PostgreSQL best practices"
+  ],
+  "evaluation": [
+    "Identify unnecessary complexity",
+    "Identify overuse of JSON",
+    "Identify poor normalization",
+    "Identify missing entities",
+    "Recommend simplifications",
+    "Explain every recommendation with trade-offs",
+    "Prefer clean relational modeling over minimizing the number of tables"
+  ],
+  "desired_output": "Produce a complete, production-quality CRM database redesign suitable for a professional PostgreSQL application. The schema should comfortably support tens of thousands of contacts while remaining easy for a solo developer to understand, maintain, and extend."
+}

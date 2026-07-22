@@ -1,0 +1,927 @@
+================================================================================
+LUCY CRM — COMPLETE ARCHITECTURE & BUILD GUIDE
+A thorough walkthrough of a production-shaped Next.js CRM.
+================================================================================
+
+Audience: an engineer who wants to understand THIS app end to end, AND learn —
+both design-wise and syntax-wise — how to build a Next.js CRM from scratch.
+
+Read it top to bottom once for the mental model, then use the section index to
+jump around. Every claim below is grounded in the actual files in src/.
+
+--------------------------------------------------------------------------------
+SECTION INDEX
+--------------------------------------------------------------------------------
+  0.  TL;DR — what this app is
+  1.  The stack and why each piece was chosen
+  2.  Directory structure (annotated tree)
+  3.  The request lifecycle (how a page renders / a write happens)
+  4.  The layered architecture (the single most important idea)
+  5.  The repository pattern & the two-backend toggle
+  6.  Data model — entities, fields, and relationships
+  7.  Database schema, migrations, and the "single-table" philosophy
+  8.  Authentication & authorization
+  9.  Feature-by-feature file map (what calls what)
+  10. Integrations (Google, Stripe, LeadConnector) & the demo-fallback pattern
+  11. The automations runner — a timing engine inside a serverless app
+  12. UI conventions (MUI, theming, the client/server split)
+  13. Cross-cutting patterns you can copy
+  14. Scalability issues & where this design will hurt
+  15. Key decisions & trade-offs (the "why")
+  16. How to extend the app (step-by-step recipes)
+  17. How to run, build, verify, and deploy
+  18. Glossary
+
+
+================================================================================
+0. TL;DR — WHAT THIS APP IS
+================================================================================
+
+Lucy CRM is an internal, single-tenant CRM for a coaching/consulting business.
+It manages:
+
+  • Contacts (people / leads)                    → /contacts
+  • Tags (segmentation, as an activity log)      → /tags, /tags/history
+  • Products (things you sell) + Purchases       → /products, /products/history
+  • Booking calendars (Calendly-style)           → /calendar, public /c/[slug]
+  • Forms (hosted + embeddable lead capture)     → /forms, public /f/[slug]
+  • Email automations (form→email→tag→wait)      → /automations
+  • UTM link builder + first-touch attribution   → /utm
+  • Admin users (operators who log in)           → /admins
+  • Integrations config                          → /settings/integrations
+  • An analytics dashboard                       → /dashboard
+
+It has ONE defining architectural trick: the entire data layer sits behind a
+repository interface with TWO interchangeable implementations — an in-memory
+demo store and a live Supabase (Postgres) backend — chosen automatically at
+startup based on whether real credentials are present. The app is fully usable
+with zero configuration (demo mode) and becomes production-durable the moment
+you fill in .env — with no code change.
+
+The same "works now, goes live when keyed" idea extends to every external
+integration (Google Calendar, Stripe, LeadConnector).
+
+
+================================================================================
+1. THE STACK AND WHY EACH PIECE WAS CHOSEN
+================================================================================
+
+  Next.js 15 (App Router)  — React Server Components by default; server actions
+                             for writes; file-based routing. Chosen because it
+                             lets 95% of the app be server-rendered with direct
+                             DB access and almost no client-side data fetching.
+
+  React 19                 — Concurrent features (useTransition) used for the
+                             "pending" states on every mutation.
+
+  TypeScript (strict)      — One hand-written source of truth for domain types
+                             in src/lib/types.ts (see Section 6).
+
+  MUI v6 (@mui/material)   — Component library + theming. @mui/x-data-grid for
+                             tables, @mui/x-date-pickers available for dates.
+                             Emotion is the styling engine (@emotion/*).
+
+  Supabase                 — Managed Postgres + JS client. Used ONLY as a
+                             database here (see Section 8: auth is custom, not
+                             Supabase Auth).
+
+  Zod                      — Runtime validation at the server-action boundary.
+                             Types are inferred FROM the schemas where useful.
+
+  date-fns                 — Date utilities (kept light; note the deliberate
+                             choice NOT to add date-fns-tz — see Section 15).
+
+  Node crypto (built-in)   — Password hashing (scrypt), HMAC session/signature
+                             signing, Stripe webhook verification. No external
+                             crypto/auth dependencies.
+
+  No SDKs for integrations — Google, Stripe, and LeadConnector are all called
+                             via plain fetch() to keep the dependency tree tiny
+                             and the code transparent (see Section 10).
+
+Package scripts (package.json):
+  dev        → next dev
+  build      → next build
+  start      → next start
+  lint       → next lint
+  typecheck  → tsc --noEmit      (run this constantly while developing)
+
+
+================================================================================
+2. DIRECTORY STRUCTURE (ANNOTATED)
+================================================================================
+
+Production-NextJS/
+├─ .env.example            Documented env vars; the app auto-detects real vs
+│                          placeholder values (see src/lib/env.ts).
+├─ next.config.ts          Next config (minimal).
+├─ tsconfig.json           Path alias "@/*" → "src/*" lives here.
+├─ package.json            Deps + scripts.
+├─ supabase/
+│  ├─ schema.sql           ONE-SHOT full schema for a fresh database.
+│  └─ migrations/          Incremental, ordered, idempotent SQL:
+│     ├─ 0001_init.sql
+│     ├─ 0002_tag_events.sql
+│     ├─ 0003_single_tables.sql   (merged the tag tables — see Section 7)
+│     ├─ 0004_admins_and_utm.sql
+│     ├─ 0005_calendars.sql       (calendars inside products)
+│     └─ 0006_automations.sql     (automations + enrollments tables)
+└─ src/
+   ├─ middleware.ts        Edge gate: presence-checks the session cookie and
+   │                       redirects protected routes to /login.
+   ├─ theme.ts             MUI theme factory (light/dark tokens).
+   ├─ app/                 App Router tree (routes = folders).
+   │  ├─ layout.tsx        ROOT layout: fonts, MUI cache, ThemeRegistry.
+   │  ├─ page.tsx          "/" → redirect("/dashboard").
+   │  ├─ login/            Public login screen + its server actions.
+   │  ├─ (app)/            ROUTE GROUP: all authenticated CRM screens. The
+   │  │  │                 parentheses mean the folder name is NOT in the URL;
+   │  │  │                 it exists only to share one layout (the app shell)
+   │  │  │                 and one auth guard.
+   │  │  ├─ layout.tsx     Calls requireAdmin(); wraps children in <AppShell>.
+   │  │  ├─ actions.ts     THE WRITE SURFACE — most server actions live here.
+   │  │  ├─ dashboard/     Analytics page + charts.
+   │  │  ├─ contacts/      Contacts list + editor (page.tsx + *Client.tsx).
+   │  │  ├─ tags/          Tags + tags/history.
+   │  │  ├─ products/      Products + products/history.
+   │  │  ├─ calendar/      Booking calendar admin (list + builder).
+   │  │  ├─ forms/         Form builder + embed dialog.
+   │  │  ├─ automations/   Automation builder + [id] enrollment detail.
+   │  │  ├─ admins/        Operator management (has its OWN actions.ts).
+   │  │  └─ settings/
+   │  │     └─ integrations/  Connect Google / Stripe / LeadConnector.
+   │  ├─ f/[slug]/         PUBLIC hosted form page (outside (app), no chrome).
+   │  ├─ c/[slug]/         PUBLIC booking page (+ /confirm).
+   │  └─ api/              Route Handlers (HTTP endpoints):
+   │     ├─ ingest/[token]/     Public form submission intake.
+   │     ├─ book/[slug]/        Public booking submission.
+   │     ├─ google/connect|callback/  OAuth flow.
+   │     ├─ stripe/webhook/     Payment confirmation (source of truth).
+   │     └─ automations/tick/   The automation runner endpoint (cron target).
+   ├─ components/          Shared UI: AppShell, PageHeader, StatTile, UserMenu,
+   │                       ThemeRegistry.
+   └─ lib/                 ALL non-UI logic:
+      ├─ types.ts          Domain types (the schema mirror).
+      ├─ env.ts            Central env access + isXConfigured() detectors.
+      ├─ auth.ts           Session cookie sign/verify + requireAdmin().
+      ├─ password.ts       scrypt hashing.
+      ├─ format.ts         Money/date formatting (client-safe).
+      ├─ utm.ts            UTM extract/build/label helpers (client-safe).
+      ├─ analytics.ts      Dashboard aggregations.
+      ├─ ingest.ts         Shared form-submission processing.
+      ├─ booking.ts        Shared booking-confirmation logic.
+      ├─ google.ts         Google Calendar client (+ demo fallback).
+      ├─ stripe.ts         Stripe client + webhook verify (+ demo fallback).
+      ├─ leadconnector.ts  LeadConnector email client (+ demo fallback).
+      ├─ automations/
+      │  ├─ runner.ts       The sequence/timing engine.
+      │  └─ triggers.ts     Turns CRM events into enrollments.
+      ├─ supabase/
+      │  ├─ admin.ts        Service-role client (bypasses RLS).
+      │  ├─ server.ts       Cookie-bound server client (respects RLS).
+      │  └─ client.ts       Browser client.
+      └─ db/               THE REPOSITORY (see Sections 4–5):
+         ├─ index.ts        Dispatcher: picks a backend, re-exports all fns.
+         ├─ shared.ts       Types shared by both backends.
+         ├─ store.ts        In-memory store definition + seed data.
+         ├─ memory.ts       In-memory backend implementation.
+         └─ supabase.ts     Supabase backend implementation.
+
+Naming convention for screens: each route folder has
+  • page.tsx        → a Server Component (async, fetches data, no interactivity)
+  • XxxClient.tsx   → a "use client" component (interactivity, dialogs, forms)
+The page fetches on the server and passes plain serializable props to the client.
+
+
+================================================================================
+3. THE REQUEST LIFECYCLE
+================================================================================
+
+READING A PAGE (e.g. GET /products):
+  1. middleware.ts runs at the edge. /products matches the protected matcher, so
+     it checks for the "lucy_session" cookie. Missing → redirect to /login.
+     (It only checks PRESENCE — the signature is verified later, in the layout.)
+  2. src/app/(app)/layout.tsx runs on the server. It calls requireAdmin()
+     (src/lib/auth.ts), which verifies the cookie's HMAC signature and reloads
+     the admin from the DB. Invalid → redirect("/login"). Valid → renders
+     <AppShell> with the sidebar + top bar.
+  3. src/app/(app)/products/page.tsx (async Server Component) calls repository
+     functions (listProducts, listPurchases) directly — no fetch, no API route.
+     It shapes the rows and renders <ProductsClient rows={...}/>.
+  4. ProductsClient.tsx ("use client") renders the interactive DataGrid, dialogs,
+     and toasts. It received data as props; it does not fetch on mount.
+
+WRITING DATA (e.g. creating a product):
+  1. The user submits the dialog in ProductsClient.tsx.
+  2. The client calls a SERVER ACTION imported from ../actions.ts
+     (createProductAction). Server actions are RPC-like async functions marked
+     "use server"; Next handles the transport.
+  3. The action validates input with Zod, calls the repository (createProduct),
+     then calls revalidatePath("/", "layout") so every server-rendered screen
+     refetches on the next navigation/refresh.
+  4. The client wraps the call in React.useTransition() for a pending spinner,
+     shows a success/error Snackbar, and calls router.refresh() to re-pull the
+     server-rendered tree.
+
+PUBLIC WRITE (e.g. a form submission from an embedded widget):
+  1. External site POSTs JSON to /api/ingest/[token] (a Route Handler).
+  2. The handler looks up the form by its unguessable token (the capability),
+     then calls the shared ingestSubmission() in src/lib/ingest.ts.
+  3. ingest upserts the contact, applies mapped fields + tags + UTM, records the
+     submission, and fires automation triggers (enrollFromForm/enrollFromTag).
+  CORS is wide open on these public routes because the token/slug is the auth.
+
+
+================================================================================
+4. THE LAYERED ARCHITECTURE (THE KEY IDEA)
+================================================================================
+
+Data flows through clean layers. Never skip a layer.
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ UI: Server Components (page.tsx) + Client Components (*Client.tsx)│
+  └───────────────┬─────────────────────────────┬────────────────────┘
+                  │ reads (direct call)          │ writes
+                  ▼                              ▼
+  ┌─────────────────────────┐      ┌──────────────────────────────────┐
+  │ src/lib/analytics.ts,   │      │ Server Actions (actions.ts) and   │
+  │ ingest.ts, booking.ts,  │      │ Route Handlers (app/api/**)       │
+  │ automations/*           │      │  - Zod validation                 │
+  │ (domain logic)          │      │  - revalidatePath()               │
+  └───────────┬─────────────┘      └───────────────┬──────────────────┘
+              │                                    │
+              └───────────────┬────────────────────┘
+                              ▼
+                 ┌──────────────────────────────┐
+                 │ src/lib/db/index.ts           │  THE REPOSITORY FACADE
+                 │  (dispatcher + re-exports)     │
+                 └───────┬───────────────┬────────┘
+                         │               │
+                 ┌───────▼──────┐  ┌──────▼────────┐
+                 │ memory.ts    │  │ supabase.ts   │  interchangeable backends
+                 │ (+ store.ts) │  │ (+ admin.ts)  │
+                 └──────────────┘  └───────────────┘
+
+RULES THAT MAKE THIS WORK:
+  • UI and domain code import ONLY from "@/lib/db" (the facade), never from
+    memory.ts or supabase.ts directly.
+  • Every repository function has an IDENTICAL async signature in both backends.
+  • Server-only modules import "server-only" at the top (throws if bundled into
+    client code) — see memory.ts, supabase.ts, auth.ts, google.ts, etc.
+  • Writes go through the action/route layer for validation + revalidation; UI
+    never mutates the repository directly.
+
+
+================================================================================
+5. THE REPOSITORY PATTERN & THE TWO-BACKEND TOGGLE
+================================================================================
+
+FILE: src/lib/db/index.ts  (the dispatcher)
+
+    import { isSupabaseConfigured } from "@/lib/env";
+    import * as memory from "@/lib/db/memory";
+    import * as supabase from "@/lib/db/supabase";
+
+    const impl = isSupabaseConfigured() ? supabase : memory;
+
+    export const activeBackend = isSupabaseConfigured() ? "supabase" : "memory";
+
+    // Then simply re-export every function from the chosen impl:
+    export const listProducts = impl.listProducts;
+    export const createProduct = impl.createProduct;
+    // ...one line per repository function, grouped by entity.
+
+The backend is chosen ONCE, at module load. isSupabaseConfigured() (env.ts)
+returns true only when the URL looks like a real https://*.supabase.co and the
+keys are not the ".env.example" placeholders. So:
+  • fresh checkout, no .env      → memory backend (demo data, non-durable)
+  • real Supabase creds in .env  → supabase backend (durable Postgres)
+No code change flips it. The sidebar shows a "Live database" vs "Demo data"
+badge fed by activeBackend (AppShell "backend" prop).
+
+FILE: src/lib/db/store.ts  (in-memory state + seed)
+  • Defines the Store interface (arrays: admins, customers, tagActivity,
+    products, purchases, forms, submissions, automations, enrollments).
+  • seed() builds demo data (1 admin, 5 contacts, 4 tags, products, a couple of
+    booking calendars, a demo automation + enrollment, etc.).
+  • The store is attached to globalThis so it survives Next.js hot-reloads in
+    dev: `const g = globalThis as { __lucyStore?: Store }`.
+  • now()/currentDate() are the timestamp helpers.
+
+FILE: src/lib/db/memory.ts  (in-memory backend)
+  • Pure array operations. Every read clones (JSON round-trip) so callers can't
+    mutate the store by reference.
+  • Because Node's event loop is single-threaded and these functions have no
+    await points between read and write, "check-then-write" sequences (e.g.
+    bookSlot's overlap check) are race-free WITHIN the process.
+
+FILE: src/lib/db/supabase.ts  (Postgres backend)
+  • Uses the service-role admin client (bypasses RLS — safe because there is no
+    end-user access; see Section 8).
+  • Mirrors memory.ts function-for-function. Where memory does it in JS, this
+    does it in SQL or via an RPC (e.g. claim_due_enrollments, book_slot).
+  • A tiny row<T>(data) cast bridges the untyped client to the domain types —
+    the schema is authored to match types.ts by construction.
+
+FILE: src/lib/db/shared.ts  (shared types)
+  • CustomerWithTags, TagActivityFilter, EnrollmentFilter — types both backends
+    use and the facade re-exports so call sites import them from "@/lib/db".
+
+TO ADD A REPOSITORY FUNCTION:
+  1. Implement it in memory.ts.
+  2. Implement it with the SAME signature in supabase.ts.
+  3. Re-export it from index.ts.
+  4. (If it needs shared types, put them in shared.ts.)
+
+
+================================================================================
+6. DATA MODEL — ENTITIES, FIELDS, RELATIONSHIPS
+================================================================================
+
+The single source of truth is src/lib/types.ts (hand-written, not generated).
+The Postgres schema (supabase/schema.sql) mirrors it exactly.
+
+ENTITIES (core fields; every table also has created_at/updated_at unless noted):
+
+  Admin            id, email(unique), name, password_hash, role('owner'|'admin'),
+                   last_login_at, archived_at
+                   → AdminSafe = Admin without password_hash (safe to send to UI)
+
+  Customer         id, name, email, notes, custom_fields(jsonb),
+    (a contact)    utm(jsonb, first-touch), hidden, archived_at
+                   → CustomerWithTags = Customer + derived tags[]
+
+  TagActivity      id, tag_id, kind('created'|'added'|'removed'),
+    (the tags      name, color (snapshots), who_ids[], who_names[], archived_at
+     table IS an   → Tag (derived view): id(=tag_id), name, color, ...
+     activity log) (see Section 7 for why tags are an append-only log)
+
+  Product          id, name, description, price, currency,
+    (polymorphic!) billing_type('one_time'|'subscription'), hidden,
+                   kind('standard'|'calendar'|'integration'),   ← discriminator
+                   slug, calendar(jsonb|null), integrations(jsonb|null),
+                   source_project_id, archived_at
+
+  Purchase         id, purchase_ref, customer_id, customer_name(snapshot),
+    (sales ledger) product_id, product_name(snapshot), unit_amount, currency,
+                   status('unpaid'|'paid'|'refunded'), purchased_at,
+                   billing_type, period_start/end, sub_status, canceled_at,
+                   external_ref, archived_at
+
+  CrmForm          id, name, slug(unique), token(unique, the capability),
+                   fields(FormFieldDef[]), mapping(FormMapping),
+                   create_customer, active, archived_at
+
+  FormSubmission   id, form_id, payload(jsonb), mapped(jsonb), customer_id,
+                   source_ip, utm(jsonb), status
+
+  --- nested inside a Product of kind='calendar' (in the `calendar` jsonb) ---
+  CalendarConfig   utc_offset_minutes, timezone_label, slot_minutes,
+                   weekly_hours(WeeklyHours), lead_time_minutes, window_days,
+                   paid, busyness{enabled,fraction,epoch_days}, bookings(Booking[])
+  Booking          id, status('pending'|'confirmed'|'canceled'), start, end,
+                   name, email, notes, customer_id, google_event_id,
+                   hold_expires_at, stripe_session_id, amount, currency
+
+  --- nested in the single Product of kind='integration' (integrations jsonb) ---
+  IntegrationSettings  google{connected,refresh_token,calendar_id,
+                              connected_email,connected_at}, stripe{account_label}
+
+  Automation       id, name, description, trigger(AutomationTrigger),
+                   steps(AutomationStep[]), active, archived_at
+  AutomationTrigger  kind('form_submission'|'tag_added'|'manual'),form_id?,tag_id?
+  AutomationStep     union: EmailStep | TagStep | WaitStep
+  AutomationEnrollment id, automation_id, customer_id, customer_name/email
+                   (snapshots), status('active'|'completed'|'canceled'|'failed'),
+                   current_step, next_run_at, context(jsonb merge fields),
+                   history(EnrollmentHistoryEntry[])
+
+RELATIONSHIPS (text ER diagram):
+
+  admins            (standalone — operators)
+
+  customers 1───* purchases *───1 products
+      │                                 │
+      │ (who_ids[] reference,           │ kind='calendar' → embeds Booking[]
+      │  not a FK — see Section 7)      │ kind='integration' → embeds settings
+      *                                 │
+   tags(activity rows)                  └── (calendars are products)
+
+  forms 1───* form_submissions *───0..1 customers
+      │
+      │ (a form_submission may upsert/attach a customer)
+
+  automations 1───* automation_enrollments *───1 customers
+                                             (enrollment references an automation
+                                              and a customer; FKs in Postgres)
+
+  Booking *───0..1 customers   (a confirmed booking links to a CRM contact)
+
+NOTE ON "SNAPSHOTS": Purchases, tag activity, bookings, and enrollments copy the
+contact/product NAME at write time (customer_name, product_name, who_names,
+customer_name). This keeps historical records readable even after the source is
+renamed or deleted. This is a deliberate denormalization (see Section 15).
+
+
+================================================================================
+7. DATABASE SCHEMA, MIGRATIONS & THE "SINGLE-TABLE" PHILOSOPHY
+================================================================================
+
+TWO WAYS TO CREATE THE SCHEMA:
+  • Fresh DB → run supabase/schema.sql once (idempotent, self-contained).
+  • Existing DB → run the numbered migrations in order.
+Both are kept in sync: new features add a migration AND inline the same DDL into
+schema.sql.
+
+CONVENTIONS IN THE SQL:
+  • Every table: `create table if not exists` (idempotent).
+  • gen_random_uuid() primary keys (pgcrypto extension).
+  • A shared set_updated_at() trigger function stamps updated_at on UPDATE.
+  • Soft deletes via archived_at timestamptz (never hard DELETE business data).
+  • RLS is ENABLED on every table but mostly has NO policies — because the app
+    connects with the service-role key which bypasses RLS. The only policy is
+    "public read of active forms" (needed to render embedded forms with the
+    anon key, if ever used). admins has no policy on purpose so password hashes
+    can never leak to the anon key.
+
+THE "MINIMIZE TABLES" PHILOSOPHY (and where it bends):
+
+  (a) TAGS ARE ONE TABLE — AN ACTIVITY LOG. There is no tags catalogue + a
+      customer_tags join + a tag_events audit table. Instead, every row in
+      `tags` is an event:
+        kind='created' → defines a tag (holds its name/color/identity)
+        kind='added'   → applied to who_ids[] contacts
+        kind='removed' → removed from who_ids[] contacts
+      The tag CATALOGUE = the 'created' rows. A contact's CURRENT membership is
+      DERIVED: for each contact, the most recent added/removed row wins. This is
+      an event-sourcing style model. It gives you free history and multi-contact
+      operations (one 'added' row can list many who_ids). The derivation logic
+      (currentTagIdsFor / membershipMap) lives in BOTH backends.
+      → Migration 0003 merged the old three-table design into this one.
+
+  (b) CALENDARS LIVE IN THE PRODUCTS TABLE. A booking calendar is just a Product
+      with kind='calendar' and a `calendar` JSONB blob that also holds the
+      bookings array. The single global integration secrets row is likewise a
+      Product with kind='integration'. listProducts() filters to kind='standard'
+      so calendars/integration rows never leak into the product grid, pickers,
+      or revenue analytics. (Migration 0005.)
+
+  (c) AUTOMATIONS BREAK THE PATTERN — ON PURPOSE. Automations get their OWN two
+      tables (automations, automation_enrollments). Why the exception? The
+      automation runner must query DUE enrollments ACROSS ALL automations,
+      ordered by next_run_at, with an index. A JSON-array-in-a-row model cannot
+      index that soundly. The STEP DEFINITIONS still live as a JSONB array on
+      the automation row (that's the builder shape), but the per-contact runtime
+      state needs real rows. (Migration 0006.)
+
+  The lesson: prefer few tables + JSONB for config/definition data; use real
+  tables + indexes when you must QUERY/SORT across many rows efficiently.
+
+TWO NOTABLE POSTGRES FUNCTIONS (RPCs called by supabase.ts):
+  • book_slot(product_id, booking, now) — does the overlap check AND the append
+    in ONE statement, so two people can't grab the same slot (fixes the
+    read-modify-write race that array-in-a-row would otherwise have).
+  • claim_due_enrollments(now, limit) — atomically selects due enrollments with
+    `for update skip locked` and pushes their next_run_at forward (a lease), so
+    two overlapping runner ticks can't double-send.
+
+
+================================================================================
+8. AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+This app uses CUSTOM lightweight auth — NOT Supabase Auth. There is a small
+`admins` table of operators who can log in. (End customers never log in.)
+
+FILES:
+  src/lib/password.ts  — scrypt hashing. Format: "scrypt$<saltHex>$<hashHex>".
+                         verifyPassword uses timingSafeEqual (constant-time).
+  src/lib/auth.ts      — the session:
+     • Cookie "lucy_session" = "<adminId>.<hmacSHA256(adminId, SESSION_SECRET)>".
+     • createSession() sets it httpOnly, sameSite=lax, secure in prod, 30d.
+     • parseToken() recomputes the HMAC and constant-time compares — a tampered
+       id fails, so a forged cookie can't authenticate.
+     • getCurrentAdmin() re-loads the admin from the DB (so archived/deleted
+       admins are rejected even with a valid-looking cookie).
+     • requireAdmin() → getCurrentAdmin() or redirect("/login"). Called by the
+       (app) layout, so EVERY authenticated screen is guarded in one place.
+  src/app/login/actions.ts — loginAction (useActionState-compatible): validates,
+                         verifyPassword, createSession, redirect. logoutAction
+                         destroys the session. Uniform "incorrect email or
+                         password" message avoids leaking which emails exist.
+  src/middleware.ts    — an EDGE pre-filter. It only checks cookie PRESENCE and
+                         redirects protected routes to /login. It does NOT verify
+                         the signature (that's requireAdmin's job) — this keeps
+                         the edge cheap and avoids doing crypto/DB at the edge.
+                         The matcher lists protected path prefixes; everything
+                         else (login, /f, /c, /api/*) stays public.
+
+THREE SUPABASE CLIENTS (src/lib/supabase/):
+  • admin.ts  — service-role key, BYPASSES RLS. Used by the repository and the
+                public ingest/booking routes (which authorize via token/slug).
+  • server.ts — cookie-bound, RESPECTS RLS. Present for a future end-user auth
+                model; not the primary path today.
+  • client.ts — browser client with the anon key. Present for the same reason.
+
+WHY NO SUPABASE AUTH: the app is single-operator/internal; a tiny HMAC cookie is
+simpler, has no vendor lock-in, and works identically in demo mode (where there
+is no Supabase at all). Trade-off: no built-in password reset / MFA / OAuth —
+you'd add those or switch to Supabase Auth if the app went multi-user.
+
+
+================================================================================
+9. FEATURE-BY-FEATURE FILE MAP (WHAT CALLS WHAT)
+================================================================================
+
+Legend:  [SC]=Server Component  [CC]=Client Component  [SA]=Server Actions
+         [RH]=Route Handler  [L]=lib module
+
+CONTACTS
+  app/(app)/contacts/page.tsx [SC] → listCustomers, listTags (repo)
+    → ContactsClient.tsx [CC] → createContactAction / updateContactAction /
+      archiveContactAction / setContactTagsAction (actions.ts [SA])
+      → repo: createCustomer/updateCustomer/archiveCustomer/setCustomerTags
+      (setContactTagsAction also diffs tags and calls enrollFromTag — automations)
+
+TAGS
+  app/(app)/tags/page.tsx [SC] → listTags, tagUsageCounts
+    → TagsClient.tsx [CC] → createTagAction/updateTagAction/archiveTagAction
+  app/(app)/tags/history/page.tsx [SC] → listTagActivity → TagHistoryClient [CC]
+  All tag membership changes append rows via the repo (never write membership
+  directly) — see Section 7(a).
+
+PRODUCTS
+  app/(app)/products/page.tsx [SC] → listProducts(true), listPurchases; computes
+     per-product units/revenue → ProductsClient.tsx [CC] → create/update/archive
+     ProductAction.
+  app/(app)/products/history/page.tsx [SC] → listPurchases → HistoryClient [CC]
+     → recordPurchaseAction / archivePurchaseAction.
+
+CALENDARS (admin)
+  app/(app)/calendar/page.tsx [SC] → listCalendars; derives upcoming counts
+     → CalendarClient.tsx [CC] (builder: weekly hours, slot length, timezone
+       offset, paid toggle, scarcity slider) → create/update/archiveCalendar
+       Action.
+PUBLIC BOOKING
+  app/c/[slug]/page.tsx [SC] → getCalendarBySlug; freeBusy() [L google]; then
+     computeAvailability() [L availability] → PublicBooking.tsx [CC] (day/slot
+     grid + attendee form) → POST /api/book/[slug] [RH].
+  api/book/[slug]/route.ts [RH] → getCalendarBySlug, re-validate slot
+     (isSlotBookable), upsertCustomerByEmail, bookSlot (atomic). Free → confirm
+     immediately (booking.ts confirmBooking → google.insertEvent). Paid →
+     create Stripe checkout (stripe.ts) with a pending hold; on success the
+     webhook confirms.
+  api/stripe/webhook/route.ts [RH] → verifyWebhook, findBookingByStripeSession,
+     confirmBooking (idempotent). THE source of truth for paid bookings.
+  app/c/[slug]/confirm/page.tsx [SC] → in demo mode confirms directly; in live
+     mode only READS status (the webhook confirms even if the tab closed).
+
+FORMS
+  app/(app)/forms/page.tsx [SC] → listForms → FormsClient.tsx [CC] →
+     FormBuilderDialog.tsx (fields + mapping + tags) and EmbedDialog.tsx (iframe
+     + tracking snippet) → create/update/setActive/archiveFormAction.
+PUBLIC FORM
+  app/f/[slug]/page.tsx [SC] → getFormBySlug → PublicForm.tsx [CC] → POST
+     /api/ingest/[token] [RH] → getFormByToken → ingestSubmission() [L ingest]:
+     upsert contact, map fields, apply tags + UTM, record submission, fire
+     automation triggers.
+
+AUTOMATIONS
+  app/(app)/automations/page.tsx [SC] → listAutomations, listForms, listTags,
+     listEnrollments → AutomationsClient.tsx [CC] (builder: trigger picker +
+     ordered step editor with email/tag/wait) → create/update/setActive/archive
+     AutomationAction + runTickAction ("Run now").
+  app/(app)/automations/[id]/page.tsx [SC] → getAutomation, listEnrollments,
+     listCustomers → EnrollmentsClient.tsx [CC] (enrollment table + per-contact
+     history + bulk enroll) → enrollContactsAction / cancelEnrollmentAction.
+  api/automations/tick/route.ts [RH] → auth via AUTOMATIONS_CRON_SECRET →
+     runDueEnrollments() [L automations/runner].
+  Triggers: ingest.ts and setContactTagsAction call enrollFromForm/enrollFromTag
+     [L automations/triggers] → enrollContact (repo) → runDueEnrollments().
+
+DASHBOARD
+  app/(app)/dashboard/page.tsx [SC] → getOverview() [L analytics] (aggregates
+     purchases/customers/products) → DashboardCharts.tsx [CC] (Recharts) +
+     StatTile.tsx components.
+
+ADMINS
+  app/(app)/admins/page.tsx [SC] → listAdmins → AdminsClient.tsx [CC] →
+     admins/actions.ts [SA] (its OWN action file) → create/update/archiveAdmin.
+     Guards against archiving the last owner via liveAdminCount().
+
+INTEGRATIONS
+  app/(app)/settings/integrations/page.tsx [SC] → getIntegrationSettings +
+     isGoogle/Stripe/LeadConnectorConfigured() → IntegrationsClient.tsx [CC]
+     (Connect Google button → /api/google/connect; Live/Demo badges) →
+     disconnectGoogleAction.
+
+SHARED CHROME
+  components/AppShell.tsx [CC] — sidebar nav (grouped sections), top bar, dark
+     mode toggle, backend badge. Nav items are a data array; add a route by
+     adding one entry.
+  components/PageHeader.tsx, StatTile.tsx, UserMenu.tsx, ThemeRegistry.tsx.
+
+
+================================================================================
+10. INTEGRATIONS & THE DEMO-FALLBACK PATTERN
+================================================================================
+
+Three external services, each wrapped in a lib module, each with the SAME shape:
+
+  google.ts        — OAuth (buildAuthUrl/exchangeCode), token refresh (cached
+                     in-process), freeBusy(), insertEvent(). The global refresh
+                     token is stored in the integration Product row (minted at
+                     runtime, so it can't live in env).
+  stripe.ts        — createCheckoutSession(), verifyWebhook() (manual HMAC per
+                     Stripe's scheme, no SDK).
+  leadconnector.ts — sendEmail(), upsertContact(). Base URL / version / endpoint
+                     are env-configurable (v2 defaults) so any account works.
+
+THE PATTERN (copy this for any new integration):
+  1. env.ts exposes accessors + an isXConfigured() that returns true only for
+     real (non-placeholder) keys.
+  2. The lib module checks isXConfigured() (and, for Google, whether a token is
+     stored) at the top of each call.
+  3. If NOT configured → return a believable fake (freeBusy → [], insertEvent →
+     "demo-evt-…", sendEmail → "demo-msg-…", Stripe checkout → an internal
+     /confirm URL). The whole feature still runs end to end.
+  4. If configured → do the real fetch() call.
+  5. The Integrations screen shows a Live/Demo badge per service.
+
+Result: you can build, demo, and test EVERY feature with zero credentials, then
+go live by pasting keys — the same philosophy as the DB toggle (Section 5). The
+three axes (DB, Google, Stripe, LeadConnector) each fall back independently.
+
+
+================================================================================
+11. THE AUTOMATIONS RUNNER — A TIMING ENGINE IN A SERVERLESS APP
+================================================================================
+
+Problem: "wait 1 day, then send another email" needs something to resume later.
+Serverless functions don't stay resident. Solution: Lucy stores each enrolled
+contact's position + next_run_at, and a stateless endpoint advances due work.
+
+FLOW:
+  • A trigger (form submit / tag add / manual) → enrollContact() creates an
+    enrollment with current_step=0 and next_run_at=now, then runDueEnrollments()
+    runs immediately so the first non-wait steps fire at trigger time.
+  • runDueEnrollments(now, limit) [runner.ts]:
+      1. claimDueEnrollments() — atomically leases due enrollments (RPC in
+         Postgres; synchronous filter in memory).
+      2. For each, execute steps from current_step in a loop:
+         - email → render {{merge}} fields from context, leadconnector.sendEmail,
+                   append a history entry, advance.
+         - tag   → addTagToCustomers / setCustomerTag(false), history, advance.
+         - wait  → set next_run_at = now + minutes, advance PAST the wait, STOP
+                   this tick (the next tick resumes here).
+         - end of steps → status='completed'.
+         - any throw → status='failed' + a history entry (the sequence halts).
+  • /api/automations/tick [RH] calls runDueEnrollments(). In production, point a
+    scheduler (Vercel Cron) at it every minute with AUTOMATIONS_CRON_SECRET. In
+    demo, the "Run now" button calls the same runner via runTickAction.
+
+IDEMPOTENCY / SAFETY:
+  • claim_due_enrollments uses `for update skip locked` + a lease so overlapping
+    ticks don't double-process.
+  • Every executed step is logged to enrollment.history for an audit trail.
+  • The email step is the risky one (external side effect) — a redelivered tick
+    could re-send if the lease expired; at single-operator scale this is
+    acceptable and documented.
+
+
+================================================================================
+12. UI CONVENTIONS
+================================================================================
+
+SERVER vs CLIENT SPLIT:
+  • page.tsx is an async Server Component: fetch data, shape it, pass plain
+    props. It has `export const dynamic = "force-dynamic"` so it always reflects
+    the latest data (no static caching of CRM screens).
+  • XxxClient.tsx is "use client": holds all interactivity (dialogs, forms,
+    DataGrid, toasts). Receives serializable props only.
+  • GOTCHA (learned the hard way): a Server Component must NOT pass a function-
+    valued MUI `sx` prop (e.g. boxShadow: (t) => ...) to a component — functions
+    aren't serializable across the server/client boundary. Use static values in
+    Server Components; theme-callback sx is fine inside "use client" files.
+
+THE STANDARD SCREEN TEMPLATE (every list screen follows it):
+  • <PageHeader title subtitle action={<Button>Add…</Button>} />
+  • A MUI <DataGrid> with columns incl. a right-aligned actions cell
+    (edit/archive icon buttons).
+  • A builder <Dialog> for create/edit, keyed by row id so it resets per row.
+  • A run() helper wrapping useTransition: awaits the action, shows a Snackbar,
+    calls router.refresh(). Copy this helper verbatim between screens.
+
+THEMING:
+  • theme.ts is a factory getTheme(mode) with brand tokens, soft shadows, and
+    per-component overrides (flat, data-dense CRM look).
+  • ThemeRegistry.tsx provides a ColorMode context + a toggle, persists the
+    choice to localStorage, and stamps <html data-mode> via an inline script in
+    the ROOT layout BEFORE hydration — so there is no flash of the wrong theme.
+  • layout.tsx wires MUI's App Router cache provider + the Geist font.
+
+
+================================================================================
+13. CROSS-CUTTING PATTERNS YOU CAN COPY
+================================================================================
+
+  • server-only guard: `import "server-only";` at the top of any module that
+    must never reach the browser (DB, secrets, crypto).
+  • Validate at the boundary: Zod schemas in actions.ts parse every input; the
+    repository trusts its inputs.
+  • revalidateAll(): writes call revalidatePath("/", "layout") so all server
+    screens refetch. Simple and correct; coarse (see scalability).
+  • Soft delete everywhere: archived_at, never DELETE.
+  • Snapshots for history: copy names onto ledger/log rows.
+  • Capability URLs for public endpoints: unguessable token (forms) or slug
+    (calendars) IS the authorization; CORS is open on those routes only.
+  • Idempotent SQL: `if not exists`, `on conflict do nothing`, `or replace`.
+  • Fake-when-unconfigured: every external call degrades to a demo no-op.
+  • Path alias @/* → src/* (tsconfig) so imports are absolute and movable.
+
+
+================================================================================
+14. SCALABILITY ISSUES & WHERE THIS DESIGN WILL HURT
+================================================================================
+
+Honest assessment — this app is built for a SINGLE internal operator and modest
+data volumes. At larger scale, these are the pressure points:
+
+  1. TAG MEMBERSHIP IS DERIVED IN APP CODE. listCustomers() (supabase.ts) fetches
+     ALL add/removed tag rows and folds them in JS to compute membership. This is
+     O(activity rows) on every contacts load and is not paginated. Fix at scale:
+     a materialized membership view, or a periodic rollup table, or move the fold
+     into SQL.
+
+  2. BOOKINGS LIVE IN A JSONB ARRAY on the calendar row. A popular calendar's row
+     grows unbounded; every availability computation reads the whole array; the
+     row is a write-contention hotspot. book_slot mitigates the race but not the
+     growth. Fix: promote bookings to their own table once volume warrants.
+
+  3. revalidatePath("/", "layout") ON EVERY WRITE invalidates the entire tree.
+     Fine for one user; wasteful under load. Fix: targeted revalidatePath/
+     revalidateTag per affected route.
+
+  4. NO PAGINATION AT THE DATA LAYER. list* functions return everything and the
+     DataGrid paginates client-side. Fix: push limit/offset/cursor into the repo
+     and the SQL.
+
+  5. THE AUTOMATION RUNNER runs inline in the trigger request AND on a single
+     tick endpoint. It processes up to `limit` per tick and sends emails
+     synchronously. At volume you want a real queue/worker, backoff on send
+     failures, and dedupe keys on the email side. Email re-send on lease expiry
+     is possible (documented).
+
+  6. IN-PROCESS CACHES (Google access token; the globalThis store) are per-
+     instance. Across multiple serverless instances they don't share — the store
+     is demo-only so that's fine, but the token cache just means occasional
+     extra refreshes.
+
+  7. SINGLE-TENANT ASSUMPTIONS: no org/tenant id anywhere; service-role client
+     bypasses RLS. Going multi-tenant means adding tenant scoping to every table
+     and query, and likely switching to per-user RLS + Supabase Auth.
+
+  8. ANALYTICS (getOverview) pulls all purchases/customers/products and
+     aggregates in JS. Fine for thousands; move to SQL aggregates / a reporting
+     table for millions.
+
+None of these are bugs — they're conscious trade-offs for simplicity at the
+current scale, listed so a future maintainer knows exactly what to change first.
+
+
+================================================================================
+15. KEY DECISIONS & TRADE-OFFS (THE "WHY")
+================================================================================
+
+  • Repository + two backends: lets the app run with zero setup (demo) and go
+    durable with keys, and keeps DB tech swappable. Cost: every function written
+    twice, kept in sync by discipline.
+
+  • Custom HMAC-cookie auth instead of Supabase Auth: minimal, no lock-in, works
+    in demo mode. Cost: no password reset/MFA/social out of the box.
+
+  • Tags as an append-only activity log (one table): free history, multi-contact
+    ops, no join table. Cost: membership is a derivation, not a lookup (see 14.1).
+
+  • Calendars/integration secrets inside the products table: honors "few tables";
+    calendars are conceptually a kind of sellable. Cost: must filter kind
+    everywhere products are listed; bookings-in-row growth (14.2).
+
+  • Automations get real tables (the deliberate exception): the runner needs an
+    indexable next_run_at across all enrollments — JSON-in-a-row can't do it.
+
+  • Fixed numeric UTC offset per calendar (NOT IANA tz / DST): keeps slot math
+    pure and identical on server & client with no date-fns-tz dependency. Cost:
+    no automatic daylight-saving adjustment.
+
+  • Deterministic "scarcity": busy slots are chosen by hashing
+    calendarId:slotISO:epochBucket, not Math.random at render — so the same slot
+    is consistently shown busy across renders and re-rolls only per epoch window.
+
+  • Pending-hold + webhook for paid bookings: the Stripe webhook is the source of
+    truth so a closed tab never loses a paid booking; the hold prevents two
+    people paying for one slot; confirmBooking is idempotent for redelivery.
+
+  • Integrations via fetch(), no SDKs: smaller dependency tree, transparent
+    wire calls, easy to point at any account/endpoint via env.
+
+  • Snapshots on ledger rows: history stays readable after renames/deletes; cost
+    is duplicated data that can drift (accepted — history should be immutable).
+
+  • dynamic="force-dynamic" + revalidatePath on writes: always-fresh CRM screens
+    with a dead-simple mental model; cost is coarse invalidation (14.3).
+
+
+================================================================================
+16. HOW TO EXTEND THE APP (RECIPES)
+================================================================================
+
+ADD A NEW ENTITY + SCREEN (e.g. "Notes"):
+  1. types.ts: add the interface.
+  2. supabase/migrations/000N_notes.sql: create the table (+ inline into
+     schema.sql). Add updated_at trigger + archived_at.
+  3. db/store.ts: add a `notes: Note[]` array to Store + seed a couple.
+  4. db/memory.ts: implement listNotes/createNote/updateNote/archiveNote.
+  5. db/supabase.ts: implement the SAME functions against the table.
+  6. db/index.ts: re-export them.
+  7. app/(app)/actions.ts: add zod-validated createNoteAction etc. + revalidate.
+  8. app/(app)/notes/page.tsx [SC] + NotesClient.tsx [CC]: copy the products
+     screen template.
+  9. components/AppShell.tsx: add a nav entry (one object in NAV_SECTIONS).
+  10. src/middleware.ts: add "/notes/:path*" to the protected matcher.
+  11. Run `npm run typecheck` and `npm run lint`.
+
+ADD A NEW AUTOMATION STEP TYPE (e.g. "webhook"):
+  1. types.ts: add the variant to the AutomationStep union.
+  2. actions.ts: add it to the zod discriminatedUnion (stepSchema).
+  3. runner.ts: handle the new `step.type` in the execution loop.
+  4. AutomationsClient.tsx StepEditor: add its editor + the "Add step" menu item.
+
+ADD A NEW INTEGRATION:
+  Follow Section 10 exactly: env accessors + isXConfigured(), a lib/x.ts with
+  demo fallback, and an Integration card on the settings page.
+
+
+================================================================================
+17. HOW TO RUN, BUILD, VERIFY, DEPLOY
+================================================================================
+
+LOCAL (demo mode — no setup):
+  npm install
+  npm run dev            # http://localhost:3000  (in-memory store, demo data)
+  Login: admin@lucy.crm / admin1234  (seeded demo admin)
+
+TYPE + LINT + BUILD (run before every commit):
+  npm run typecheck      # tsc --noEmit — the fast correctness gate
+  npm run lint           # next lint
+  npm run build          # full production build; compiles every route
+
+GO LIVE (fill .env — see .env.example for the annotated list):
+  • Supabase: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY. Then run supabase/schema.sql once. The app
+    auto-switches to the Postgres backend.
+  • SESSION_SECRET: a strong random string (the dev fallback is forgeable).
+  • Google: GOOGLE_CLIENT_ID/SECRET; add redirect <APP_URL>/api/google/callback;
+    click "Connect Google account" on Settings → Integrations.
+  • Stripe: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET; point a webhook at
+    <APP_URL>/api/stripe/webhook.
+  • LeadConnector: LEADCONNECTOR_API_KEY (+ LOCATION_ID).
+  • Automations: AUTOMATIONS_CRON_SECRET; schedule GET/POST
+    <APP_URL>/api/automations/tick every minute (Vercel Cron example in
+    .env.example).
+
+VERIFY FLOWS (demo mode, via curl or the UI):
+  • Form → POST /api/ingest/demo-token-lead-0001 → contact created + automation
+    enrolled (first email + tag run immediately, then it waits).
+  • Booking (free) → POST /api/book/discovery-call with an available slot →
+    confirmed; double-book returns 409.
+  • Tick → POST /api/automations/tick?secret=<secret> → advances due enrollments.
+
+
+================================================================================
+18. GLOSSARY
+================================================================================
+
+  Server Component   React component that runs only on the server; can be async
+                     and call the DB directly. Default in the App Router.
+  Client Component   "use client" component; runs in the browser; holds state
+                     and interactivity.
+  Server Action      "use server" async function callable from the client like
+                     an RPC; the app's write surface.
+  Route Handler      A file in app/api/**/route.ts exporting GET/POST/etc; a raw
+                     HTTP endpoint (used for public + webhook + cron endpoints).
+  Route Group        A folder in parentheses, e.g. (app), that shares a layout
+                     but does not appear in the URL.
+  Repository         The db/ facade with swappable memory/supabase backends.
+  RLS                Row Level Security (Postgres). Enabled but bypassed by the
+                     service-role client here.
+  Activity log model The tags design: rows are events; current state is derived.
+  Demo fallback      An integration returning a believable fake when unconfigured
+                     so the feature still runs.
+  Snapshot           A copied value (e.g. customer_name on a purchase) frozen at
+                     write time for readable history.
+  Capability URL     A URL whose secret token/slug is itself the authorization.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

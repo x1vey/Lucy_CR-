@@ -1,15 +1,17 @@
 -- ============================================================================
--- Lucy CRM — full schema (v2, relational redesign)
+-- Lucy CRM — DATABASE REDESIGN v2 (proposed)
 --
--- One-shot setup for a FRESH database: paste into the Supabase SQL editor and
--- Run once, or `supabase db execute -f supabase/schema.sql`. Idempotent.
+-- A clean, relational, production-quality schema for a SINGLE-TENANT CRM on
+-- PostgreSQL (Supabase). Redesigns ONLY the database layer; the application
+-- architecture (repository pattern, server actions, soft deletes, UUID PKs,
+-- snapshot fields, JSON for definitions, relational runtime) is preserved.
 --
--- A clean, relational, single-tenant CRM schema on PostgreSQL (Supabase). Tags
--- are relational (catalogue + membership + history), calendars and bookings are
--- their own tables, integration settings are per-provider rows, and the contact
--- record is a full CRM customer. See DB_REDESIGN.md for the ER diagram +
--- rationale, and migrations/0007_redesign.sql to migrate an EXISTING v1 database
--- (schema_v2.sql is retained as the annotated reference copy).
+-- Prefers clean relational modeling over minimizing table count. Comfortably
+-- supports tens of thousands of contacts while staying easy for a solo dev to
+-- understand. See DB_REDESIGN.md for the ER diagram, rationale, and migration.
+--
+-- Idempotent where practical. Intended as the target for a fresh database or
+-- the end-state of the expand/backfill/contract migration in DB_REDESIGN.md.
 -- ============================================================================
 
 create extension if not exists "pgcrypto";   -- gen_random_uuid()

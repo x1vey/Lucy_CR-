@@ -24,6 +24,9 @@ import DynamicFormIcon from "@mui/icons-material/DynamicForm";
 import SellIcon from "@mui/icons-material/Sell";
 import HistoryIcon from "@mui/icons-material/History";
 import LinkIcon from "@mui/icons-material/Link";
+import EventAvailableIcon from "@mui/icons-material/EventAvailable";
+import ExtensionIcon from "@mui/icons-material/Extension";
+import AutoAwesomeMotionIcon from "@mui/icons-material/AutoAwesomeMotion";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import MenuIcon from "@mui/icons-material/Menu";
 import DarkModeIcon from "@mui/icons-material/DarkModeOutlined";
@@ -65,12 +68,18 @@ const NAV_SECTIONS: { heading: string; items: NavItem[] }[] = [
         label: "Product history",
         icon: <ReceiptLongIcon />,
       },
+      { href: "/calendar", label: "Calendars", icon: <EventAvailableIcon /> },
     ],
   },
   {
     heading: "Acquisition",
     items: [
       { href: "/forms", label: "Forms", icon: <DynamicFormIcon /> },
+      {
+        href: "/automations",
+        label: "Automations",
+        icon: <AutoAwesomeMotionIcon />,
+      },
       { href: "/utm", label: "UTM links", icon: <LinkIcon /> },
     ],
   },
@@ -78,6 +87,11 @@ const NAV_SECTIONS: { heading: string; items: NavItem[] }[] = [
     heading: "Settings",
     items: [
       { href: "/admins", label: "Admins", icon: <AdminPanelSettingsIcon /> },
+      {
+        href: "/settings/integrations",
+        label: "Integrations",
+        icon: <ExtensionIcon />,
+      },
     ],
   },
 ];

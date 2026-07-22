@@ -25,9 +25,12 @@ export const config = {
     "/dashboard/:path*",
     "/contacts/:path*",
     "/products/:path*",
+    "/calendar/:path*",
     "/tags/:path*",
     "/forms/:path*",
+    "/automations/:path*",
     "/admins/:path*",
+    "/settings/:path*",
     "/utm/:path*",
   ],
 };

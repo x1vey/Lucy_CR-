@@ -8,6 +8,7 @@ import {
   upsertCustomerByEmail,
 } from "@/lib/db";
 import { extractUtm, hasUtm } from "@/lib/utm";
+import { enrollFromForm, enrollFromTag } from "@/lib/automations/triggers";
 import type { CrmForm } from "@/lib/types";
 
 // Takes a raw form payload + the form definition, applies the field mapping to
@@ -90,6 +91,8 @@ export async function ingestSubmission(
 
     if (form.mapping.apply_tag_ids.length) {
       await applyTags(customer.id, form.mapping.apply_tag_ids);
+      // Tag-added automations fire for tags this form applies.
+      await enrollFromTag(form.mapping.apply_tag_ids, [customer.id]);
     }
 
     // Record first-touch attribution on the contact (doesn't overwrite an
@@ -97,6 +100,9 @@ export async function ingestSubmission(
     if (hasUtm(utm)) {
       await setCustomerUtm(customer.id, utm);
     }
+
+    // Form-submission automations fire for this form.
+    await enrollFromForm(form.id, customer.id);
   }
 
   const sub = await recordSubmission({

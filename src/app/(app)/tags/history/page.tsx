@@ -1,20 +1,21 @@
 import Box from "@mui/material/Box";
-import { listTagActivity, listTags } from "@/lib/db";
+import { listTagHistory, listTags } from "@/lib/db";
 import TagHistoryClient, { type TagActivityRow } from "./TagHistoryClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function TagHistoryPage() {
-  const [activity, tags] = await Promise.all([listTagActivity(), listTags()]);
+  const [history, tags] = await Promise.all([listTagHistory(), listTags()]);
+  const colorById = new Map(tags.map((t) => [t.id, t.color]));
 
-  const rows: TagActivityRow[] = activity.map((a) => ({
-    id: a.id,
-    kind: a.kind,
-    tag_id: a.tag_id,
-    tag_name: a.name,
-    tag_color: a.color,
-    who_names: a.who_names,
-    created_at: a.created_at,
+  const rows: TagActivityRow[] = history.map((h) => ({
+    id: h.id,
+    action: h.action,
+    tag_id: h.tag_id ?? "",
+    tag_name: h.tag_name,
+    tag_color: (h.tag_id && colorById.get(h.tag_id)) || "#6366f1",
+    customer_name: h.customer_name,
+    created_at: h.created_at,
   }));
 
   return (

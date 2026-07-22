@@ -24,7 +24,12 @@ export const activeBackend: "supabase" | "memory" = isSupabaseConfigured()
   ? "supabase"
   : "memory";
 
-export type { CustomerWithTags, TagActivityFilter } from "@/lib/db/shared";
+export type {
+  CustomerWithTags,
+  EnrollmentFilter,
+  TagHistoryFilter,
+} from "@/lib/db/shared";
+export type { CalendarInput } from "@/lib/db/memory";
 
 // ---- Admins ---------------------------------------------------------------
 export const listAdmins = impl.listAdmins;
@@ -45,8 +50,8 @@ export const archiveCustomer = impl.archiveCustomer;
 export const upsertCustomerByEmail = impl.upsertCustomerByEmail;
 export const setCustomerUtm = impl.setCustomerUtm;
 
-// ---- Tags (one activity-log table) ----------------------------------------
-export const listTagActivity = impl.listTagActivity;
+// ---- Tags (relational: catalogue + membership + history) -------------------
+export const listTagHistory = impl.listTagHistory;
 export const listTags = impl.listTags;
 export const tagsForCustomer = impl.tagsForCustomer;
 export const createTag = impl.createTag;
@@ -58,12 +63,29 @@ export const setCustomerTag = impl.setCustomerTag;
 export const applyTags = impl.applyTags;
 export const addTagToCustomers = impl.addTagToCustomers;
 
-// ---- Products -------------------------------------------------------------
+// ---- Products (plain sellables) --------------------------------------------
 export const listProducts = impl.listProducts;
 export const getProduct = impl.getProduct;
 export const createProduct = impl.createProduct;
 export const updateProduct = impl.updateProduct;
 export const archiveProduct = impl.archiveProduct;
+
+// ---- Calendars + Bookings (relational) -------------------------------------
+export const listCalendars = impl.listCalendars;
+export const getCalendar = impl.getCalendar;
+export const getCalendarBySlug = impl.getCalendarBySlug;
+export const createCalendar = impl.createCalendar;
+export const updateCalendar = impl.updateCalendar;
+export const archiveCalendar = impl.archiveCalendar;
+export const listBookings = impl.listBookings;
+export const getBooking = impl.getBooking;
+export const bookSlot = impl.bookSlot;
+export const updateBooking = impl.updateBooking;
+export const findBookingByStripeSession = impl.findBookingByStripeSession;
+
+// ---- Integration settings (per-provider rows) ------------------------------
+export const getIntegrationSettings = impl.getIntegrationSettings;
+export const updateIntegrationSettings = impl.updateIntegrationSettings;
 
 // ---- Purchases ------------------------------------------------------------
 export const listPurchases = impl.listPurchases;
@@ -85,3 +107,49 @@ export const archiveForm = impl.archiveForm;
 // ---- Submissions ----------------------------------------------------------
 export const listSubmissions = impl.listSubmissions;
 export const recordSubmission = impl.recordSubmission;
+
+// ---- Automations ----------------------------------------------------------
+export const listAutomations = impl.listAutomations;
+export const getAutomation = impl.getAutomation;
+export const createAutomation = impl.createAutomation;
+export const updateAutomation = impl.updateAutomation;
+export const archiveAutomation = impl.archiveAutomation;
+
+// ---- Automation enrollments + step runs ------------------------------------
+export const listEnrollments = impl.listEnrollments;
+export const getEnrollment = impl.getEnrollment;
+export const enrollContact = impl.enrollContact;
+export const updateEnrollment = impl.updateEnrollment;
+export const cancelEnrollment = impl.cancelEnrollment;
+export const claimDueEnrollments = impl.claimDueEnrollments;
+export const recordStepRun = impl.recordStepRun;
+export const listStepRuns = impl.listStepRuns;
+
+// ---- Notes ----------------------------------------------------------------
+export const listNotes = impl.listNotes;
+export const createNote = impl.createNote;
+export const archiveNote = impl.archiveNote;
+
+// ---- Activities (customer timeline) ----------------------------------------
+export const listActivities = impl.listActivities;
+export const recordActivity = impl.recordActivity;
+
+// ---- Emails ---------------------------------------------------------------
+export const listEmails = impl.listEmails;
+export const recordEmail = impl.recordEmail;
+
+// ---- Deals + pipeline ------------------------------------------------------
+export const listPipelineStages = impl.listPipelineStages;
+export const listDeals = impl.listDeals;
+export const createDeal = impl.createDeal;
+export const updateDeal = impl.updateDeal;
+export const archiveDeal = impl.archiveDeal;
+
+// ---- Attachments -----------------------------------------------------------
+export const listAttachments = impl.listAttachments;
+export const createAttachment = impl.createAttachment;
+export const archiveAttachment = impl.archiveAttachment;
+
+// ---- Audit logs (system) ---------------------------------------------------
+export const listAuditLogs = impl.listAuditLogs;
+export const recordAuditLog = impl.recordAuditLog;
