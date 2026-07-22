@@ -16,7 +16,26 @@ import DashboardCharts from "./DashboardCharts";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const o = await getOverview();
+  let o;
+  try {
+    o = await getOverview();
+  } catch (err: any) {
+    return (
+      <Box sx={{ p: 4 }}>
+        <Typography variant="h6" color="error">
+          Error inside getOverview
+        </Typography>
+        <Box
+          component="pre"
+          sx={{ mt: 2, p: 2, bgcolor: "rgba(0,0,0,0.05)", overflowX: "auto" }}
+        >
+          {err?.message || String(err)}
+          {"\n\n"}
+          {err?.stack}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box>
